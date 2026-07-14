@@ -1,0 +1,6 @@
+{
+  "name": "Carbon Zero Village",
+  "description": "영수증을 분석하여 친환경 품목은 포인트를 얻고, 탄소 배출이 많은 품목은 감점을 받으며 황무지 마을을 친환경 에코 빌리지로 꾸미는 게임형 교육 앱입니다.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
