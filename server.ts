@@ -7,12 +7,32 @@ import { Pool } from "pg";
 
 dotenv.config();
 
-const app = express();
+export const app = express();
 const PORT = 3000;
 
 // Body parser with 10mb limit for base64 image uploads
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
+
+// Database initialization state & helper
+let isDbInitialized = false;
+async function ensureDbReady() {
+  if (isDbInitialized) return;
+  await initDb();
+  isDbInitialized = true;
+}
+
+// Middleware to ensure Database tables exist before processing requests
+app.use(async (req, res, next) => {
+  if (req.path.startsWith("/api/")) {
+    try {
+      await ensureDbReady();
+    } catch (err) {
+      console.error("Database connection check failed:", err);
+    }
+  }
+  next();
+});
 
 // Lazy init of Gemini API
 let aiClient: GoogleGenAI | null = null;
@@ -516,4 +536,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.VERCEL !== "1") {
+  startServer();
+}
+
+export default app;
