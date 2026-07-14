@@ -75,15 +75,16 @@ function getDbPool(): Pool | null {
   return dbPool;
 }
 
-// Ensure database tables exist
+// Ensure database tables exist and are altered with all required columns
 async function initDb() {
   const pool = getDbPool();
   if (!pool) return;
   try {
+    // 1. Create table users if it does not exist
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id VARCHAR(100) PRIMARY KEY,
-        username VARCHAR(100) NOT NULL,
+        username VARCHAR(100),
         email VARCHAR(150) UNIQUE NOT NULL,
         password VARCHAR(200) NOT NULL,
         points INTEGER DEFAULT 150,
@@ -92,7 +93,25 @@ async function initDb() {
         receipt_history JSONB DEFAULT '[]'::jsonb
       );
     `);
-    console.log("PostgreSQL 'users' table structure verified.");
+
+    // 2. Add columns individually with IF NOT EXISTS to guarantee compat with pre-existing tables
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(100);
+    `);
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS points INTEGER DEFAULT 150;
+    `);
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS unlocked_decorations JSONB DEFAULT '[]'::jsonb;
+    `);
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS placed_decorations JSONB DEFAULT '[]'::jsonb;
+    `);
+    await pool.query(`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS receipt_history JSONB DEFAULT '[]'::jsonb;
+    `);
+
+    console.log("PostgreSQL 'users' table structure verified, missing columns added if they didn't exist.");
   } catch (err) {
     console.error("Error creating/verifying table structure in Neon:", err);
   }
@@ -100,6 +119,7 @@ async function initDb() {
 
 // Convert snake_case PostgreSQL columns to camelCase for the frontend
 function mapDbUserToProfile(dbUser: any): any {
+  if (!dbUser) return null;
   let unlocked = [];
   let placed = [];
   let history = [];
@@ -130,9 +150,9 @@ function mapDbUserToProfile(dbUser: any): any {
 
   return {
     id: dbUser.id,
-    username: dbUser.username,
+    username: dbUser.username || dbUser.email?.split("@")[0] || "에코히어로",
     email: dbUser.email,
-    points: dbUser.points ?? 150,
+    points: dbUser.points !== undefined && dbUser.points !== null ? dbUser.points : 150,
     unlockedDecorations: Array.isArray(unlocked) ? unlocked : [],
     placedDecorations: Array.isArray(placed) ? placed : [],
     receiptHistory: Array.isArray(history) ? history : [],

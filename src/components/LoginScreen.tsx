@@ -84,7 +84,8 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || "인증 처리 중 오류가 발생했습니다.");
+        const detailMsg = data.details ? ` (${data.details})` : "";
+        throw new Error((data.error || "인증 처리 중 오류가 발생했습니다.") + detailMsg);
       }
 
       onLoginSuccess(data.user);
