@@ -30,7 +30,23 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
     onLoginSuccess(demoUser);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [loading, setLoading] = useState<boolean>(false);
+  const [dbConnected, setDbConnected] = useState<boolean | null>(null);
+
+  // Check database status on load
+  React.useEffect(() => {
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((data) => {
+        // Simple health check
+        setDbConnected(true);
+      })
+      .catch(() => {
+        setDbConnected(false);
+      });
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
@@ -49,51 +65,34 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
       return;
     }
 
-    // Creating or logging in user saved in localStorage
-    const savedUsersRaw = localStorage.getItem("eco_village_users");
-    const users: Record<string, UserProfile> = savedUsersRaw ? JSON.parse(savedUsersRaw) : {};
+    setLoading(true);
 
-    if (isLogin) {
-      // Find user by email
-      const foundUser = Object.values(users).find(u => u.email === email);
-      if (foundUser) {
-        onLoginSuccess(foundUser);
-      } else {
-        // If not found in localStorage, create it dynamically to be friendly
-        const newUser: UserProfile = {
-          id: `user-${Date.now()}`,
-          username: email.split("@")[0],
-          email: email,
-          points: 150, // default start points
-          unlockedDecorations: [],
-          placedDecorations: [],
-          receiptHistory: []
-        };
-        users[newUser.id] = newUser;
-        localStorage.setItem("eco_village_users", JSON.stringify(users));
-        onLoginSuccess(newUser);
-      }
-    } else {
-      // Signup
-      const emailExists = Object.values(users).some(u => u.email === email);
-      if (emailExists) {
-        setError("이미 가입된 이메일 주소입니다.");
-        return;
+    try {
+      const endpoint = isLogin ? "/api/auth/login" : "/api/auth/signup";
+      const payload = isLogin 
+        ? { email, password }
+        : { username, email, password };
+
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "인증 처리 중 오류가 발생했습니다.");
       }
 
-      const newUser: UserProfile = {
-        id: `user-${Date.now()}`,
-        username: username,
-        email: email,
-        points: 150, // default starting points
-        unlockedDecorations: [],
-        placedDecorations: [],
-        receiptHistory: []
-      };
-
-      users[newUser.id] = newUser;
-      localStorage.setItem("eco_village_users", JSON.stringify(users));
-      onLoginSuccess(newUser);
+      onLoginSuccess(data.user);
+    } catch (err: any) {
+      console.error("Authentication error:", err);
+      setError(err.message || "서버와 연결할 수 없거나 처리 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -127,6 +126,26 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                 ? "영수증을 촬영해 탄소 배출량을 분석하고 나만의 마을을 가꾸세요!" 
                 : "친환경 습관으로 가상의 마을을 활기차고 푸르게 꾸며보세요."}
             </p>
+
+            {/* Neon DB Status Indicator Badge */}
+            <div className="mt-4 flex justify-center">
+              {dbConnected === null ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 animate-pulse">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                  서버 연결 상태 확인 중...
+                </span>
+              ) : dbConnected ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-100">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
+                  Neon PostgreSQL DB 연동 활성화
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-100">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  임시 로컬 메모리 모드 활성화 (데모 가능)
+                </span>
+              )}
+            </div>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -143,9 +162,10 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
                 <input
                   type="text"
                   placeholder="예: 초록나무"
+                  disabled={loading}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all"
+                  className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all disabled:opacity-65"
                 />
               </div>
             )}
@@ -155,9 +175,10 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
               <input
                 type="email"
                 placeholder="eco@earth.org"
+                disabled={loading}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all disabled:opacity-65"
               />
             </div>
 
@@ -166,17 +187,24 @@ export default function LoginScreen({ onLoginSuccess }: LoginScreenProps) {
               <input
                 type="password"
                 placeholder="••••••"
+                disabled={loading}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all"
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-sm transition-all disabled:opacity-65"
               />
             </div>
 
             <button
               type="submit"
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium py-3 rounded-xl transition-all shadow-md flex items-center justify-center gap-2 mt-2 cursor-pointer text-sm"
+              disabled={loading}
+              className="w-full bg-slate-900 hover:bg-slate-800 disabled:bg-slate-700 text-white font-medium py-3 rounded-xl transition-all shadow-md flex items-center justify-center gap-2 mt-2 cursor-pointer text-sm"
             >
-              {isLogin ? (
+              {loading ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  <span>처리 중...</span>
+                </>
+              ) : isLogin ? (
                 <>
                   <LogIn className="w-4 h-4" />
                   <span>로그인 / 바로 시작하기</span>

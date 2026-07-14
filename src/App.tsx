@@ -35,7 +35,35 @@ export default function App() {
     setCurrentUser(updated);
     localStorage.setItem("eco_village_current_session", JSON.stringify(updated));
 
-    // Also update the general users list registry
+    // Synchronize user profile (points, placements, history) with Neon PostgreSQL DB in the background
+    if (updated.id && updated.id !== "demo-user") {
+      fetch("/api/auth/update-profile", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          id: updated.id,
+          points: updated.points,
+          unlockedDecorations: updated.unlockedDecorations,
+          placedDecorations: updated.placedDecorations,
+          receiptHistory: updated.receiptHistory,
+        }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            console.log("Profile successfully synchronized with PostgreSQL database.");
+          } else {
+            console.warn("DB profile update warning:", data.error);
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to sync profile with database:", err);
+        });
+    }
+
+    // Also update the general users list registry in local cache
     const savedUsersRaw = localStorage.getItem("eco_village_users");
     const users = savedUsersRaw ? JSON.parse(savedUsersRaw) : {};
     users[updated.id] = updated;

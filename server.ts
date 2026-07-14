@@ -3,6 +3,7 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { Pool } from "pg";
 
 dotenv.config();
 
@@ -33,9 +34,252 @@ function getGeminiClient(): GoogleGenAI | null {
   return aiClient;
 }
 
+// Lazy init of Neon PostgreSQL
+let dbPool: Pool | null = null;
+const inMemoryUsers: Record<string, any> = {};
+
+function getDbPool(): Pool | null {
+  if (!dbPool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (connectionString && connectionString.trim() !== "" && !connectionString.includes("postgresql://user:password")) {
+      dbPool = new Pool({
+        connectionString,
+        ssl: {
+          rejectUnauthorized: false, // Required for Neon SSL connection
+        },
+      });
+      console.log("Neon PostgreSQL Pool initialized successfully.");
+    } else {
+      console.log("DATABASE_URL is not set or using placeholder. Running in-memory database fallback mode.");
+    }
+  }
+  return dbPool;
+}
+
+// Ensure database tables exist
+async function initDb() {
+  const pool = getDbPool();
+  if (!pool) return;
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(100) PRIMARY KEY,
+        username VARCHAR(100) NOT NULL,
+        email VARCHAR(150) UNIQUE NOT NULL,
+        password VARCHAR(200) NOT NULL,
+        points INTEGER DEFAULT 150,
+        unlocked_decorations JSONB DEFAULT '[]'::jsonb,
+        placed_decorations JSONB DEFAULT '[]'::jsonb,
+        receipt_history JSONB DEFAULT '[]'::jsonb
+      );
+    `);
+    console.log("PostgreSQL 'users' table structure verified.");
+  } catch (err) {
+    console.error("Error creating/verifying table structure in Neon:", err);
+  }
+}
+
+// Convert snake_case PostgreSQL columns to camelCase for the frontend
+function mapDbUserToProfile(dbUser: any): any {
+  let unlocked = [];
+  let placed = [];
+  let history = [];
+
+  try {
+    unlocked = typeof dbUser.unlocked_decorations === 'string'
+      ? JSON.parse(dbUser.unlocked_decorations)
+      : (dbUser.unlocked_decorations || []);
+  } catch (e) {
+    unlocked = dbUser.unlocked_decorations || [];
+  }
+
+  try {
+    placed = typeof dbUser.placed_decorations === 'string'
+      ? JSON.parse(dbUser.placed_decorations)
+      : (dbUser.placed_decorations || []);
+  } catch (e) {
+    placed = dbUser.placed_decorations || [];
+  }
+
+  try {
+    history = typeof dbUser.receipt_history === 'string'
+      ? JSON.parse(dbUser.receipt_history)
+      : (dbUser.receipt_history || []);
+  } catch (e) {
+    history = dbUser.receipt_history || [];
+  }
+
+  return {
+    id: dbUser.id,
+    username: dbUser.username,
+    email: dbUser.email,
+    points: dbUser.points ?? 150,
+    unlockedDecorations: Array.isArray(unlocked) ? unlocked : [],
+    placedDecorations: Array.isArray(placed) ? placed : [],
+    receiptHistory: Array.isArray(history) ? history : [],
+  };
+}
+
 // REST API endpoints
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
+});
+
+// Authentication endpoints
+app.post("/api/auth/signup", async (req, res) => {
+  const { username, email, password } = req.body;
+  if (!username || !email || !password) {
+    return res.status(400).json({ error: "아이디, 이메일, 비밀번호를 모두 입력해주세요." });
+  }
+
+  const userId = `user-${Date.now()}`;
+  const pool = getDbPool();
+
+  if (pool) {
+    try {
+      // Check if email already exists
+      const checkRes = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+      if (checkRes.rows.length > 0) {
+        return res.status(400).json({ error: "이미 가입된 이메일 주소입니다." });
+      }
+
+      // Insert new user
+      const insertQuery = `
+        INSERT INTO users (id, username, email, password, points, unlocked_decorations, placed_decorations, receipt_history)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *
+      `;
+      const values = [
+        userId,
+        username,
+        email,
+        password, // safe hashing would be used in full production, plaintext here for easy verification & demonstration
+        150,
+        JSON.stringify([]),
+        JSON.stringify([]),
+        JSON.stringify([]),
+      ];
+
+      const insertRes = await pool.query(insertQuery, values);
+      const createdUser = mapDbUserToProfile(insertRes.rows[0]);
+      return res.json({ success: true, user: createdUser });
+    } catch (err: any) {
+      console.error("Signup DB error:", err);
+      return res.status(500).json({ error: "회원가입 처리 중 데이터베이스 오류가 발생했습니다.", details: err.message });
+    }
+  } else {
+    // In-memory fallback mode
+    const emailExists = Object.values(inMemoryUsers).some((u: any) => u.email === email);
+    if (emailExists) {
+      return res.status(400).json({ error: "이미 가입된 이메일 주소입니다. (메모리 모드)" });
+    }
+
+    const mockUser = {
+      id: userId,
+      username,
+      email,
+      password,
+      points: 150,
+      unlocked_decorations: [],
+      placed_decorations: [],
+      receipt_history: [],
+    };
+    inMemoryUsers[userId] = mockUser;
+    return res.json({ success: true, user: mapDbUserToProfile(mockUser), message: "데이터베이스 미설정으로 로컬 메모리에 임시 가입되었습니다." });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: "이메일과 비밀번호를 모두 입력해주세요." });
+  }
+
+  const pool = getDbPool();
+
+  if (pool) {
+    try {
+      const userRes = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+      if (userRes.rows.length === 0) {
+        return res.status(400).json({ error: "가입되지 않은 이메일이거나 회원 정보가 존재하지 않습니다." });
+      }
+
+      const userRow = userRes.rows[0];
+      if (userRow.password !== password) {
+        return res.status(400).json({ error: "비밀번호가 올바르하지 않습니다." });
+      }
+
+      const userProfile = mapDbUserToProfile(userRow);
+      return res.json({ success: true, user: userProfile });
+    } catch (err: any) {
+      console.error("Login DB error:", err);
+      return res.status(500).json({ error: "로그인 처리 중 데이터베이스 오류가 발생했습니다.", details: err.message });
+    }
+  } else {
+    // In-memory fallback mode
+    const mockUser = Object.values(inMemoryUsers).find((u: any) => u.email === email);
+    if (!mockUser) {
+      return res.status(400).json({ error: "가입되지 않은 이메일입니다. (메모리 모드)" });
+    }
+    if (mockUser.password !== password) {
+      return res.status(400).json({ error: "비밀번호가 올바르하지 않습니다. (메모리 모드)" });
+    }
+    return res.json({ success: true, user: mapDbUserToProfile(mockUser), message: "로컬 메모리 모드로 로그인되었습니다." });
+  }
+});
+
+app.post("/api/auth/update-profile", async (req, res) => {
+  const { id, points, unlockedDecorations, placedDecorations, receiptHistory } = req.body;
+  if (!id) {
+    return res.status(400).json({ error: "사용자 ID가 필요합니다." });
+  }
+
+  const pool = getDbPool();
+
+  if (pool) {
+    try {
+      const updateQuery = `
+        UPDATE users
+        SET points = COALESCE($2, points),
+            unlocked_decorations = COALESCE($3::jsonb, unlocked_decorations),
+            placed_decorations = COALESCE($4::jsonb, placed_decorations),
+            receipt_history = COALESCE($5::jsonb, receipt_history)
+        WHERE id = $1
+        RETURNING *
+      `;
+      const values = [
+        id,
+        points,
+        unlockedDecorations ? JSON.stringify(unlockedDecorations) : null,
+        placedDecorations ? JSON.stringify(placedDecorations) : null,
+        receiptHistory ? JSON.stringify(receiptHistory) : null,
+      ];
+
+      const updateRes = await pool.query(updateQuery, values);
+      if (updateRes.rows.length === 0) {
+        return res.status(404).json({ error: "해당 사용자를 찾을 수 없습니다." });
+      }
+
+      const updatedProfile = mapDbUserToProfile(updateRes.rows[0]);
+      return res.json({ success: true, user: updatedProfile });
+    } catch (err: any) {
+      console.error("Update profile DB error:", err);
+      return res.status(500).json({ error: "사용자 정보 동기화 중 데이터베이스 오류가 발생했습니다.", details: err.message });
+    }
+  } else {
+    // In-memory fallback mode
+    const mockUser = inMemoryUsers[id];
+    if (!mockUser) {
+      return res.status(404).json({ error: "해당 사용자를 찾을 수 없습니다." });
+    }
+
+    if (points !== undefined) mockUser.points = points;
+    if (unlockedDecorations !== undefined) mockUser.unlocked_decorations = unlockedDecorations;
+    if (placedDecorations !== undefined) mockUser.placed_decorations = placedDecorations;
+    if (receiptHistory !== undefined) mockUser.receipt_history = receiptHistory;
+
+    return res.json({ success: true, user: mapDbUserToProfile(mockUser) });
+  }
 });
 
 // Endpoint to analyze receipt
@@ -248,6 +492,9 @@ Provide the output strictly as a JSON list matching the schema.`;
 
 // Configure Vite or serve production build
 async function startServer() {
+  // Ensure database structure is ready
+  await initDb();
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
